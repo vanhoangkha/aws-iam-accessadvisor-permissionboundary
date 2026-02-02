@@ -1,0 +1,685 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Access Advisor Automation - Security Hardened
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [prod, staging, dev]
+
+  DaysExpire:
+    Type: Number
+    Default: 180
+    MinValue: 1
+    MaxValue: 365
+
+  Enforce:
+    Type: String
+    Default: 'yes'
+    AllowedValues: ['yes', 'no']
+
+  NotificationEmail:
+    Type: String
+    Default: ''
+
+Conditions:
+  HasEmail: !Not [!Equals [!Ref NotificationEmail, '']]
+
+Resources:
+  # KMS Key for encryption
+  EncryptionKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub Access Advisor ${Environment} encryption key
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowRootAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          - Sid: AllowCloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub logs.${AWS::Region}.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+            Condition:
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
+          - Sid: AllowServiceAccess
+            Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - dynamodb.amazonaws.com
+                - sqs.amazonaws.com
+                - s3.amazonaws.com
+                - sns.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:GenerateDataKey*
+            Resource: '*'
+            Condition:
+              StringEquals:
+                kms:CallerAccount: !Ref AWS::AccountId
+
+  EncryptionKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub alias/accessadvisor-${Environment}
+      TargetKeyId: !Ref EncryptionKey
+
+  # DynamoDB with encryption
+  AuditTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub AccessAdvisor-${Environment}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      SSESpecification:
+        SSEEnabled: true
+        SSEType: KMS
+        KMSMasterKeyId: !Ref EncryptionKey
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # S3 with KMS encryption and bucket policy
+  ReportsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub accessadvisor-reports-${AWS::AccountId}-${Environment}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref EncryptionKey
+            BucketKeyEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref LoggingBucket
+        LogFilePrefix: s3-access-logs/
+      LifecycleConfiguration:
+        Rules:
+          - Id: ArchiveOldReports
+            Status: Enabled
+            Transitions:
+              - StorageClass: INTELLIGENT_TIERING
+                TransitionInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ReportsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ReportsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonSSL
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt ReportsBucket.Arn
+              - !Sub ${ReportsBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: DenyIncorrectEncryption
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${ReportsBucket.Arn}/*
+            Condition:
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: aws:kms
+
+  # S3 Access Logging Bucket
+  LoggingBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub accessadvisor-logs-${AWS::AccountId}-${Environment}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldLogs
+            Status: Enabled
+            ExpirationInDays: 90
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  LoggingBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LoggingBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: S3ServerAccessLogsPolicy
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub ${LoggingBucket.Arn}/*
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  # SNS with KMS
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub AccessAdvisor-${Environment}-Notifications
+      KmsMasterKeyId: !Ref EncryptionKey
+
+  SNSTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics: [!Ref NotificationTopic]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowStepFunctions
+            Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref NotificationTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasEmail
+    Properties:
+      TopicArn: !Ref NotificationTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  # SQS with KMS encryption
+  ProcessingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub AccessAdvisor-${Environment}-Queue
+      VisibilityTimeout: 900
+      KmsMasterKeyId: !Ref EncryptionKey
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub AccessAdvisor-${Environment}-DLQ
+      MessageRetentionPeriod: 1209600
+      KmsMasterKeyId: !Ref EncryptionKey
+
+  # Step Functions with logging
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/states/AccessAdvisor-${Environment}
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt EncryptionKey.Arn
+
+  StateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub AccessAdvisor-${Environment}-Workflow
+      DefinitionUri: statemachine.asl.json
+      DefinitionSubstitutions:
+        ListEntitiesFunctionArn: !GetAtt ListEntitiesFunction.Arn
+        ProcessEntityFunctionArn: !GetAtt ProcessEntityFunction.Arn
+        GenerateReportFunctionArn: !GetAtt GenerateReportFunction.Arn
+        NotificationTopicArn: !Ref NotificationTopic
+      Logging:
+        Level: ERROR
+        IncludeExecutionData: false
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt StateMachineLogGroup.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ListEntitiesFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ProcessEntityFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref GenerateReportFunction
+        - SNSPublishMessagePolicy:
+            TopicName: !GetAtt NotificationTopic.TopicName
+        - KMSEncryptPolicy:
+            KeyId: !Ref EncryptionKey
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - kms:GenerateDataKey
+                - kms:Decrypt
+              Resource: !GetAtt EncryptionKey.Arn
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogDelivery
+                - logs:GetLogDelivery
+                - logs:UpdateLogDelivery
+                - logs:DeleteLogDelivery
+                - logs:ListLogDeliveries
+                - logs:PutResourcePolicy
+                - logs:DescribeResourcePolicies
+                - logs:DescribeLogGroups
+              Resource: '*'
+      Tracing:
+        Enabled: true
+
+  # EventBridge
+  ScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub AccessAdvisor-${Environment}-Schedule
+      ScheduleExpression: rate(90 days)
+      State: ENABLED
+      Targets:
+        - Id: StateMachine
+          Arn: !Ref StateMachine
+          RoleArn: !GetAtt EventBridgeRole.Arn
+
+  EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: StartStateMachine
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref StateMachine
+
+  # Separate Lambda Roles (Least Privilege)
+  ListEntitiesRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub AccessAdvisor-${Environment}-ListEntities-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+      Policies:
+        - PolicyName: ListEntitiesPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: IAMReadOnly
+                Effect: Allow
+                Action:
+                  - iam:ListUsers
+                  - iam:ListRoles
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    aws:PrincipalAccount: !Ref AWS::AccountId
+
+  ProcessEntityRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub AccessAdvisor-${Environment}-ProcessEntity-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+      Policies:
+        - PolicyName: ProcessEntityPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AccessAdvisor
+                Effect: Allow
+                Action:
+                  - iam:GenerateServiceLastAccessedDetails
+                  - iam:GetServiceLastAccessedDetails
+                  - iam:GetServiceLastAccessedDetailsWithEntities
+                  - iam:GetPolicy
+                  - iam:GetPolicyVersion
+                  - iam:ListPolicyVersions
+                Resource: '*'
+              - Sid: IAMTagging
+                Effect: Allow
+                Action: [iam:TagRole, iam:TagUser]
+                Resource:
+                  - !Sub arn:aws:iam::${AWS::AccountId}:user/*
+                  - !Sub arn:aws:iam::${AWS::AccountId}:role/*
+                Condition:
+                  StringEquals:
+                    aws:PrincipalAccount: !Ref AWS::AccountId
+              - Sid: IAMPolicyManagement
+                Effect: Allow
+                Action:
+                  - iam:CreatePolicy
+                  - iam:CreatePolicyVersion
+                  - iam:DeletePolicyVersion
+                Resource: !Sub arn:aws:iam::${AWS::AccountId}:policy/AccessAdvisor-PB-*
+              - Sid: IAMPermissionsBoundary
+                Effect: Allow
+                Action:
+                  - iam:PutUserPermissionsBoundary
+                  - iam:PutRolePermissionsBoundary
+                Resource:
+                  - !Sub arn:aws:iam::${AWS::AccountId}:user/*
+                  - !Sub arn:aws:iam::${AWS::AccountId}:role/*
+                Condition:
+                  ArnLike:
+                    iam:PermissionsBoundary: !Sub arn:aws:iam::${AWS::AccountId}:policy/AccessAdvisor-PB-*
+              - Sid: DynamoDB
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt AuditTable.Arn
+              - Sid: KMS
+                Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:Decrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt EncryptionKey.Arn
+
+  GenerateReportRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub AccessAdvisor-${Environment}-GenerateReport-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+      Policies:
+        - PolicyName: GenerateReportPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: S3Write
+                Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub ${ReportsBucket.Arn}/*
+                Condition:
+                  StringEquals:
+                    s3:x-amz-server-side-encryption: aws:kms
+              - Sid: KMS
+                Effect: Allow
+                Action:
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt EncryptionKey.Arn
+
+  # Lambda Functions
+  ListEntitiesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub AccessAdvisor-${Environment}-ListEntities
+      Runtime: python3.11
+      Handler: index.handler
+      Role: !GetAtt ListEntitiesRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      ReservedConcurrentExecutions: 1
+      InlineCode: |
+        import boto3
+        iam = boto3.client('iam')
+        
+        def handler(event, context):
+            entities = []
+            for page in iam.get_paginator('list_users').paginate():
+                entities.extend([{'type': 'user', 'arn': u['Arn'], 'name': u['UserName']} for u in page['Users']])
+            for page in iam.get_paginator('list_roles').paginate():
+                entities.extend([{'type': 'role', 'arn': r['Arn'], 'name': r['RoleName']} for r in page['Roles']])
+            return {'total': len(entities), 'entities': entities}
+
+  ProcessEntityFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub AccessAdvisor-${Environment}-ProcessEntity
+      Runtime: python3.11
+      Handler: index.handler
+      Role: !GetAtt ProcessEntityRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      ReservedConcurrentExecutions: 10
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref AuditTable
+          DAYS_EXPIRE: !Ref DaysExpire
+          ENFORCE: !Ref Enforce
+      InlineCode: |
+        import boto3, os, time, json
+        from datetime import date
+        from botocore.exceptions import ClientError
+        
+        iam = boto3.client('iam')
+        ddb = boto3.resource('dynamodb').Table(os.environ['TABLE_NAME'])
+        days_expire = int(os.environ['DAYS_EXPIRE'])
+        enforce = os.environ['ENFORCE']
+        account_id = boto3.client('sts').get_caller_identity()['Account']
+        
+        # Exclude patterns - don't apply boundary to these
+        EXCLUDE_PATTERNS = [
+            'AccessAdvisor-',
+            'AWSServiceRole',
+            'aws-service-role/',
+            'OrganizationAccountAccess',
+            'Admin',
+            'admin'
+        ]
+        
+        def should_exclude(name, arn):
+            for pattern in EXCLUDE_PATTERNS:
+                if pattern in name or pattern in arn:
+                    return True
+            return False
+        
+        def handler(event, context):
+            arn, name, etype = event['arn'], event['name'], event['type']
+            
+            job = iam.generate_service_last_accessed_details(Arn=arn)
+            for _ in range(30):
+                resp = iam.get_service_last_accessed_details(JobId=job['JobId'])
+                if resp['JobStatus'] == 'COMPLETED': break
+                time.sleep(2)
+            
+            services_used = []
+            total = used = 0
+            for svc in resp.get('ServicesLastAccessed', []):
+                total += 1
+                if svc['TotalAuthenticatedEntities'] > 0 and svc.get('LastAuthenticated'):
+                    if (date.today() - svc['LastAuthenticated'].date()).days <= days_expire:
+                        used += 1
+                        services_used.append(svc['ServiceNamespace'])
+            
+            coverage = round(used / total * 100) if total > 0 else 0
+            
+            ddb.put_item(Item={
+                'pk': f'{etype}#{name}', 'sk': f'audit#{date.today().isoformat()}',
+                'services_used': services_used, 'total': total, 'used': used, 'coverage': coverage,
+                'ttl': int(time.time()) + 365*24*3600
+            })
+            
+            tag_func = iam.tag_user if etype == 'user' else iam.tag_role
+            tag_key = 'UserName' if etype == 'user' else 'RoleName'
+            try:
+                tag_func(**{tag_key: name, 'Tags': [
+                    {'Key': 'Permissions_Coverage_Percent', 'Value': str(coverage)},
+                    {'Key': 'Permissions_Granted', 'Value': str(total)},
+                    {'Key': 'Permissions_Used', 'Value': str(used)}
+                ]})
+            except ClientError: pass
+            
+            if enforce == 'yes' and services_used and not should_exclude(name, arn):
+                policy_name = f'AccessAdvisor-PB-{name}'
+                policy_arn = f'arn:aws:iam::{account_id}:policy/{policy_name}'
+                policy_doc = json.dumps({
+                    'Version': '2012-10-17',
+                    'Statement': [{'Effect': 'Allow', 'Action': [f'{s}:*' for s in services_used], 'Resource': '*'}]
+                })
+                try:
+                    iam.create_policy(PolicyName=policy_name, PolicyDocument=policy_doc)
+                except iam.exceptions.EntityAlreadyExistsException:
+                    try:
+                        iam.create_policy_version(PolicyArn=policy_arn, PolicyDocument=policy_doc, SetAsDefault=True)
+                    except ClientError:
+                        for v in iam.list_policy_versions(PolicyArn=policy_arn)['Versions']:
+                            if not v['IsDefaultVersion']:
+                                iam.delete_policy_version(PolicyArn=policy_arn, VersionId=v['VersionId'])
+                                break
+                        iam.create_policy_version(PolicyArn=policy_arn, PolicyDocument=policy_doc, SetAsDefault=True)
+                
+                pb_func = iam.put_user_permissions_boundary if etype == 'user' else iam.put_role_permissions_boundary
+                try:
+                    pb_func(**{'UserName' if etype == 'user' else 'RoleName': name, 'PermissionsBoundary': policy_arn})
+                except ClientError: pass
+            
+            return {'name': name, 'type': etype, 'coverage': coverage, 'services': len(services_used)}
+
+  GenerateReportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub AccessAdvisor-${Environment}-GenerateReport
+      Runtime: python3.11
+      Handler: index.handler
+      Role: !GetAtt GenerateReportRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      ReservedConcurrentExecutions: 1
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref ReportsBucket
+      InlineCode: |
+        import boto3, os, json
+        from datetime import date
+        
+        s3 = boto3.client('s3')
+        
+        def handler(event, context):
+            results = event.get('results', [])
+            report = {
+                'date': date.today().isoformat(),
+                'total_entities': len(results),
+                'avg_coverage': sum(r['coverage'] for r in results) / len(results) if results else 0,
+                'details': results
+            }
+            key = f"reports/{date.today().isoformat()}/summary.json"
+            s3.put_object(
+                Bucket=os.environ['BUCKET_NAME'], Key=key,
+                Body=json.dumps(report, indent=2), ContentType='application/json',
+                ServerSideEncryption='aws:kms'
+            )
+            return {'report_key': key, 'total': len(results), 'avg_coverage': report['avg_coverage']}
+
+  # CloudWatch Alarms
+  LambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub AccessAdvisor-${Environment}-Lambda-Errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref ProcessEntityFunction
+      AlarmActions: [!Ref NotificationTopic]
+
+  DLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub AccessAdvisor-${Environment}-DLQ-Messages
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt DeadLetterQueue.QueueName
+      AlarmActions: [!Ref NotificationTopic]
+
+Outputs:
+  StateMachineArn:
+    Value: !Ref StateMachine
+  ReportsBucket:
+    Value: !Ref ReportsBucket
+  KMSKeyArn:
+    Value: !GetAtt EncryptionKey.Arn

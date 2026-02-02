@@ -1,0 +1,232 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CloudFormation template to deploy Access Advisor Automation for least privileged implementation
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues: [prod, staging, dev]
+
+  AppName:
+    Type: String
+    Default: AccessAdvisorAutomation
+
+  S3Bucket:
+    Type: String
+    Description: S3 bucket with installation files
+
+  S3Key:
+    Type: String
+    Default: accessadvisor_automation.zip
+
+  DoNotListBucket:
+    Type: String
+    Description: S3 bucket with exception list
+
+  DoNotListKey:
+    Type: String
+    Default: do_not_list.txt
+
+  DaysExpire:
+    Type: Number
+    Default: 180
+    MinValue: 1
+    MaxValue: 365
+
+  Enforce:
+    Type: String
+    Default: 'yes'
+    AllowedValues: ['yes', 'no']
+
+  BaseActions:
+    Type: String
+    Default: base_actions.txt
+
+  KmsKeyArn:
+    Type: String
+    Default: ''
+    Description: Optional KMS key ARN for encryption
+
+Conditions:
+  HasKmsKey: !Not [!Equals [!Ref KmsKeyArn, '']]
+
+Resources:
+  CloudWatchEventAccessAdvisor:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: AccessAdvisorAutomation
+      Description: Scheduled event for Access Advisor
+      State: ENABLED
+      ScheduleExpression: rate(90 days)
+      Targets:
+        - Arn: !GetAtt AccessAdvisorAutomationLambda.Arn
+          Id: AccessAdvisorAutomationLambda
+
+  PermissionForEventsToInvokeLambda:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt AccessAdvisorAutomationLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt CloudWatchEventAccessAdvisor.Arn
+
+  AccessAdvisorAutomationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AppName}-${Environment}-LambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+
+  AccessAdvisorAutomationPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub ${AppName}-${Environment}-Policy
+      Roles: [!Ref AccessAdvisorAutomationLambdaRole]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: IAMReadAccess
+            Effect: Allow
+            Action:
+              - iam:GetServiceLastAccessedDetailsWithEntities
+              - iam:GenerateServiceLastAccessedDetails
+              - iam:GetServiceLastAccessedDetails
+              - iam:ListUsers
+              - iam:ListRoles
+              - iam:ListGroups
+              - iam:GetPolicy
+              - iam:GetPolicyVersion
+            Resource: '*'
+          - Sid: IAMTagging
+            Effect: Allow
+            Action:
+              - iam:TagRole
+              - iam:TagUser
+            Resource:
+              - !Sub arn:aws:iam::${AWS::AccountId}:user/*
+              - !Sub arn:aws:iam::${AWS::AccountId}:role/*
+          - Sid: IAMPolicyManagement
+            Effect: Allow
+            Action:
+              - iam:CreatePolicy
+              - iam:CreatePolicyVersion
+              - iam:DeletePolicyVersion
+            Resource: !Sub arn:aws:iam::${AWS::AccountId}:policy/AccessAdvisor-PB-*
+          - Sid: IAMPermissionsBoundary
+            Effect: Allow
+            Action:
+              - iam:PutUserPermissionsBoundary
+              - iam:PutRolePermissionsBoundary
+            Resource:
+              - !Sub arn:aws:iam::${AWS::AccountId}:user/*
+              - !Sub arn:aws:iam::${AWS::AccountId}:role/*
+          - Sid: S3Access
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !Sub arn:aws:s3:::${DoNotListBucket}
+              - !Sub arn:aws:s3:::${DoNotListBucket}/*
+              - !Sub arn:aws:s3:::${S3Bucket}
+              - !Sub arn:aws:s3:::${S3Bucket}/*
+          - !If
+            - HasKmsKey
+            - Sid: KMSDecrypt
+              Effect: Allow
+              Action: kms:Decrypt
+              Resource: !Ref KmsKeyArn
+            - !Ref AWS::NoValue
+          - Sid: CloudWatchLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AppName}-${Environment}-*
+
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AppName}-${Environment}-AccessAdvisor
+      RetentionInDays: 30
+
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub ${AppName}-${Environment}-DLQ
+      MessageRetentionPeriod: 1209600
+
+  AccessAdvisorAutomationLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: LambdaLogGroup
+    Properties:
+      FunctionName: !Sub ${AppName}-${Environment}-AccessAdvisor
+      Description: Access Advisor automation for least privilege
+      Handler: accessadvisor_automation.lambda_handler
+      Role: !GetAtt AccessAdvisorAutomationLambdaRole.Arn
+      Runtime: python3.11
+      Code:
+        S3Bucket: !Ref S3Bucket
+        S3Key: !Ref S3Key
+      Timeout: 900
+      MemorySize: 256
+      ReservedConcurrentExecutions: 1
+      DeadLetterConfig:
+        TargetArn: !GetAtt DeadLetterQueue.Arn
+      Environment:
+        Variables:
+          DoNotListBucket: !Ref DoNotListBucket
+          DoNotListKey: !Ref DoNotListKey
+          DaysExpire: !Ref DaysExpire
+          Enforce: !Ref Enforce
+          BaseActions: !Ref BaseActions
+      TracingConfig:
+        Mode: Active
+
+  LambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AppName}-${Environment}-Errors
+      AlarmDescription: Alarm for Lambda errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref AccessAdvisorAutomationLambda
+
+  DLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref DeadLetterQueue]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt DeadLetterQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt AccessAdvisorAutomationLambda.Arn
+
+Outputs:
+  LambdaFunctionArn:
+    Value: !GetAtt AccessAdvisorAutomationLambda.Arn
+    Export:
+      Name: !Sub ${AppName}-${Environment}-LambdaArn
+
+  DeadLetterQueueUrl:
+    Value: !Ref DeadLetterQueue

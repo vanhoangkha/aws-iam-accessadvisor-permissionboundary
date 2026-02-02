@@ -1,0 +1,52 @@
+{
+  "Comment": "Access Advisor Automation Workflow",
+  "StartAt": "ListEntities",
+  "States": {
+    "ListEntities": {
+      "Type": "Task",
+      "Resource": "${ListEntitiesFunctionArn}",
+      "Next": "ProcessEntities"
+    },
+    "ProcessEntities": {
+      "Type": "Map",
+      "ItemsPath": "$.entities",
+      "MaxConcurrency": 10,
+      "Iterator": {
+        "StartAt": "ProcessEntity",
+        "States": {
+          "ProcessEntity": {
+            "Type": "Task",
+            "Resource": "${ProcessEntityFunctionArn}",
+            "Retry": [
+              {
+                "ErrorEquals": ["States.TaskFailed"],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.results",
+      "Next": "GenerateReport"
+    },
+    "GenerateReport": {
+      "Type": "Task",
+      "Resource": "${GenerateReportFunctionArn}",
+      "ResultPath": "$.report",
+      "Next": "SendNotification"
+    },
+    "SendNotification": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${NotificationTopicArn}",
+        "Subject": "Access Advisor Audit Complete",
+        "Message.$": "States.Format('Audit completed. Processed {} entities. Average coverage: {}%. Report: {}', $.report.total, $.report.avg_coverage, $.report.report_key)"
+      },
+      "End": true
+    }
+  }
+}
