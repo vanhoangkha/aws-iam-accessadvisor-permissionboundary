@@ -6,28 +6,25 @@
 
 Automatically audit IAM permissions and enforce least privilege using AWS Access Advisor data.
 
-## 🏗️ Architecture
+## Architecture
 
 ![Architecture](architecture.png)
 
-<details>
-<summary>High-Level Overview</summary>
+## High-Level Overview
 
 ![High Level](architecture-high-level.png)
 
-</details>
+## Features
 
-## ✨ Features
+- **Automated Audit** - Analyzes all IAM users and roles using Access Advisor API
+- **Permissions Boundary** - Automatically creates and applies boundaries based on actual usage
+- **Scheduled Execution** - Runs every 90 days via EventBridge
+- **Audit History** - Stores results in DynamoDB with 365-day TTL
+- **Reports** - Generates JSON reports in S3
+- **Notifications** - Email alerts via SNS when audit completes
+- **Security** - KMS encryption for all data at rest
 
-- 🔍 **Automated Audit** - Analyzes all IAM users and roles using Access Advisor API
-- 🛡️ **Permissions Boundary** - Automatically creates and applies boundaries based on actual usage
-- ⏰ **Scheduled Execution** - Runs every 90 days via EventBridge
-- 📊 **Audit History** - Stores results in DynamoDB with 365-day TTL
-- 📝 **Reports** - Generates JSON reports in S3
-- 📧 **Notifications** - Email alerts via SNS when audit completes
-- 🔐 **Security** - KMS encryption for all data at rest
-
-## 📋 Components
+## Components
 
 | Service | Purpose |
 |---------|---------|
@@ -40,7 +37,7 @@ Automatically audit IAM permissions and enforce least privilege using AWS Access
 | KMS | Encryption at rest |
 | CloudWatch | Alarms & monitoring |
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -69,22 +66,7 @@ sam deploy --guided
 | `Enforce` | yes | Apply permissions boundaries (yes/no) |
 | `NotificationEmail` | - | Email for notifications |
 
-## 📖 How It Works
-
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│ EventBridge │────▶│Step Functions│────▶│   Lambda    │
-│  (90 days)  │     │   Workflow   │     │ (3 funcs)   │
-└─────────────┘     └──────────────┘     └──────┬──────┘
-                                                │
-                    ┌───────────────────────────┼───────────────────────────┐
-                    │                           │                           │
-                    ▼                           ▼                           ▼
-             ┌─────────────┐            ┌─────────────┐            ┌─────────────┐
-             │     IAM     │            │  DynamoDB   │            │     S3      │
-             │Access Advisor│            │   (Audit)   │            │  (Reports)  │
-             └─────────────┘            └─────────────┘            └─────────────┘
-```
+## How It Works
 
 1. **EventBridge** triggers Step Functions workflow every 90 days
 2. **ListEntities Lambda** retrieves all IAM users and roles
@@ -97,7 +79,7 @@ sam deploy --guided
 4. **GenerateReport Lambda** creates summary report in S3
 5. **SNS** sends email notification with results
 
-## 🚫 Exclusions
+## Exclusions
 
 The following entities are excluded from permissions boundary enforcement:
 
@@ -106,10 +88,9 @@ The following entities are excluded from permissions boundary enforcement:
 - `admin` (admin users)
 - `OrganizationAccountAccess*`
 
-## 📄 Output Examples
+## Output Examples
 
-<details>
-<summary>DynamoDB Record</summary>
+### DynamoDB Record
 
 ```json
 {
@@ -122,10 +103,7 @@ The following entities are excluded from permissions boundary enforcement:
 }
 ```
 
-</details>
-
-<details>
-<summary>S3 Report</summary>
+### S3 Report
 
 ```json
 {
@@ -138,17 +116,15 @@ The following entities are excluded from permissions boundary enforcement:
 }
 ```
 
-</details>
+## Security
 
-## 🔒 Security
+- All data encrypted with KMS CMK (auto-rotation enabled)
+- Least privilege IAM roles for each Lambda function
+- S3 bucket policy enforces SSL and KMS encryption
+- DLQ for failed processing with CloudWatch alarms
+- Point-in-time recovery enabled for DynamoDB
 
-- ✅ All data encrypted with KMS CMK (auto-rotation enabled)
-- ✅ Least privilege IAM roles for each Lambda function
-- ✅ S3 bucket policy enforces SSL and KMS encryption
-- ✅ DLQ for failed processing with CloudWatch alarms
-- ✅ Point-in-time recovery enabled for DynamoDB
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 .
@@ -160,15 +136,15 @@ The following entities are excluded from permissions boundary enforcement:
 └── architecture-high-level.png # High-level architecture diagram
 ```
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
-## 📜 License
+## License
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - Based on [aws-samples/aws-iam-accessadvisor-permissionboundary](https://github.com/aws-samples/aws-iam-accessadvisor-permissionboundary)
 - Enhanced with Step Functions, DynamoDB, and security hardening
