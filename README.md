@@ -124,6 +124,63 @@ The following entities are excluded from permissions boundary enforcement:
 - DLQ for failed processing with CloudWatch alarms
 - Point-in-time recovery enabled for DynamoDB
 
+## Cost Estimation
+
+### Monthly Cost Breakdown
+
+Assumptions: 100 IAM entities, runs every 90 days (~0.33 times/month)
+
+| Service | Monthly Estimate |
+|---------|------------------|
+| Lambda (3 functions) | ~$0.25 |
+| Step Functions | ~$0.01 |
+| DynamoDB (On-Demand) | ~$0.02 |
+| S3 | ~$0.02 |
+| KMS | ~$1.00 |
+| CloudWatch | ~$0.25 |
+| SNS | ~$0.00 |
+| EventBridge | Free |
+| **Total** | **~$1.50 - $2.00** |
+
+### Cost by Scale
+
+| Scale | IAM Entities | Monthly Cost | Annual Cost |
+|-------|--------------|--------------|-------------|
+| Small | 50 | ~$1.30 | ~$16 |
+| Medium | 100 | ~$1.60 | ~$20 |
+| Large | 500 | ~$3.50 | ~$42 |
+| Enterprise | 1,000+ | ~$6.00 | ~$72 |
+
+### Cost Optimization (Already Applied)
+
+- **DynamoDB On-Demand**: Pay only when used, no provisioned capacity
+- **Lambda Reserved Concurrency**: Prevents cost spikes
+- **S3 Intelligent-Tiering**: Auto-transitions after 30 days
+- **DynamoDB TTL**: Auto-deletes old data after 365 days
+- **90-day schedule**: Optimal frequency for cost/security balance
+
+### Free Tier Coverage
+
+With AWS Free Tier, actual cost may be **~$1.00/month** (KMS key only):
+
+| Service | Free Tier | Solution Usage | Covered |
+|---------|-----------|----------------|---------|
+| Lambda | 1M requests + 400K GB-s | ~100 requests | ✅ |
+| DynamoDB | 25GB + 25 WCU/RCU | <1GB, ~100 writes | ✅ |
+| S3 | 5GB + 2K PUT | <1GB, ~10 PUT | ✅ |
+| Step Functions | 4,000 transitions | ~500 transitions | ✅ |
+| CloudWatch | 10 alarms | 2 alarms | ✅ |
+
+### ROI Analysis
+
+| Approach | Annual Cost |
+|----------|-------------|
+| Manual audit (4x/year) | ~$6,600 |
+| This solution | ~$20 |
+| **Savings** | **~99%** |
+
+> 💡 Use [AWS Pricing Calculator](https://calculator.aws) for precise estimates based on your workload.
+
 ## Project Structure
 
 ```
