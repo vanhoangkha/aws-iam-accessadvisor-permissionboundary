@@ -10,9 +10,17 @@ Automatically audit IAM permissions and enforce least privilege using AWS Access
 
 ![Architecture](architecture.png)
 
+![Main Architecture](docs/architecture-main.png)
+
 ## High-Level Overview
 
 ![High Level](architecture-high-level.png)
+
+## Additional Diagrams
+
+- [Data Flow](docs/data-flow.png)
+- [Step Functions Workflow](docs/workflow.png)
+- [Full Architecture Documentation](docs/ARCHITECTURE.md)
 
 ## Features
 
