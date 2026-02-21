@@ -127,7 +127,8 @@ The following entities are excluded from permissions boundary enforcement:
 ## Cost Estimation (2026 Pricing)
 
 > **Region:** Asia Pacific (Singapore) - ap-southeast-1  
-> **Last Updated:** February 2026
+> **Last Updated:** February 2026  
+> **Scenario:** Worst-case (maximum cost estimation)
 
 ### Pricing Reference (Singapore Region)
 
@@ -145,89 +146,148 @@ The following entities are excluded from permissions boundary enforcement:
 | KMS Requests | per 10,000 requests | $0.03 |
 | CloudWatch Logs | per GB ingested | $0.57 |
 | CloudWatch Alarms | per alarm per month | $0.10 |
-| SNS | per 1M requests | $0.50 |
+| SNS Publish | per 1M requests | $0.50 |
+| SNS Email | per 1,000 notifications | $2.00 |
 
-### Monthly Cost Calculation (100 IAM Entities)
+### Worst-Case Assumptions
 
-**Assumptions:**
-- 100 IAM entities (users + roles)
-- Runs every 90 days (~0.33 executions/month)
-- Average 300 seconds per ProcessEntity Lambda
+| Parameter | Worst-Case Value | Notes |
+|-----------|------------------|-------|
+| IAM Entities | 1,000 | Large enterprise |
+| Executions per month | 1 | Full monthly run |
+| ProcessEntity duration | 300 seconds | Max timeout |
+| ProcessEntity memory | 512 MB | Configured value |
+| Lambda retries | 3 per entity | Max retries on failure |
+| Step Functions retries | 2 per state | Error handling |
+| Log size per execution | 1 GB | Verbose logging |
+| Report size | 10 MB | Large JSON report |
+| DynamoDB item size | 4 KB | Max per entity |
+| KMS requests | 10,000 | Encryption operations |
 
-| Service | Calculation | Monthly Cost |
-|---------|-------------|--------------|
-| **Lambda** | | |
-| - Requests | 103 requests × $0.20/1M | $0.00 |
-| - ListEntities | 60s × 0.25GB × $0.0000166667 × 0.33 | $0.00 |
-| - ProcessEntity | 100 × 300s × 0.5GB × $0.0000166667 × 0.33 | $0.08 |
-| - GenerateReport | 60s × 0.25GB × $0.0000166667 × 0.33 | $0.00 |
-| **Step Functions** | 505 transitions × $0.025/1000 × 0.33 | $0.00 |
+### Monthly Cost Calculation (Worst-Case: 1,000 Entities)
+
+| Service | Worst-Case Calculation | Monthly Cost |
+|---------|------------------------|--------------|
+| **Lambda Requests** | | |
+| - ListEntities | 1 × 3 retries = 3 requests | $0.00 |
+| - ProcessEntity | 1,000 × 3 retries = 3,000 requests | $0.00 |
+| - GenerateReport | 1 × 3 retries = 3 requests | $0.00 |
+| - Total requests | 3,006 × $0.20/1M | **$0.00** |
+| **Lambda Duration** | | |
+| - ListEntities | 60s × 0.256GB × 3 retries × $0.0000166667 | $0.00 |
+| - ProcessEntity | 1,000 × 300s × 0.512GB × 3 × $0.0000166667 | **$7.68** |
+| - GenerateReport | 60s × 0.256GB × 3 retries × $0.0000166667 | $0.00 |
+| **Step Functions** | | |
+| - State transitions | (5 + 1,000×3) × 2 retries = 6,010 | |
+| - Cost | 6,010 × $0.025/1000 | **$0.15** |
 | **DynamoDB** | | |
-| - Writes | 100 WRU × $0.625/1M × 0.33 | $0.00 |
-| - Storage | 0.01GB × $0.285 | $0.00 |
+| - Writes | 1,000 items × 4KB = 4,000 WRU | |
+| - Write cost | 4,000 × $0.625/1M | $0.00 |
+| - Storage | 1,000 × 4KB = 4MB × $0.285/GB | $0.00 |
+| - Total DynamoDB | | **$0.01** |
 | **S3** | | |
-| - Storage | 0.001GB × $0.025 | $0.00 |
-| - PUT requests | 2 requests × $0.005/1000 | $0.00 |
-| **KMS** | 1 key × $1.00 | $1.00 |
+| - Storage | 10MB report × 12 months = 120MB | |
+| - Storage cost | 0.12GB × $0.025 | $0.00 |
+| - PUT requests | 10 × $0.005/1000 | $0.00 |
+| - Total S3 | | **$0.01** |
+| **KMS** | | |
+| - CMK | 1 key × $1.00 | $1.00 |
+| - Requests | 10,000 × $0.03/10000 | $0.03 |
+| - Total KMS | | **$1.03** |
 | **CloudWatch** | | |
-| - Logs | 0.05GB × $0.57 | $0.03 |
-| - Alarms (2) | 2 × $0.10 | $0.20 |
-| **SNS** | 1 notification × $0.50/1M | $0.00 |
-| **EventBridge** | Scheduled rules | Free |
-| **Total** | | **$1.31** |
+| - Logs ingested | 1GB × $0.57 | $0.57 |
+| - Log storage | 1GB × $0.033 | $0.03 |
+| - Alarms | 2 × $0.10 | $0.20 |
+| - Total CloudWatch | | **$0.80** |
+| **SNS** | | |
+| - Publish | 10 × $0.50/1M | $0.00 |
+| - Email delivery | 10 × $2.00/1000 | $0.02 |
+| - Total SNS | | **$0.02** |
+| **EventBridge** | | |
+| - Scheduled rules | Free | **$0.00** |
+| | | |
+| **TOTAL WORST-CASE** | | **$9.70** |
 
-### Cost by Scale
+### Cost by Scale (Worst-Case)
 
-| Scale | Entities | Lambda Duration | DynamoDB Writes | Monthly Cost | Annual Cost |
-|-------|----------|-----------------|-----------------|--------------|-------------|
-| Startup | 50 | 2,500 GB-s | 50 WRU | $1.27 | $15.24 |
-| SMB | 100 | 5,000 GB-s | 100 WRU | $1.31 | $15.72 |
-| Medium | 500 | 25,000 GB-s | 500 WRU | $1.52 | $18.24 |
-| Large | 1,000 | 50,000 GB-s | 1,000 WRU | $1.79 | $21.48 |
-| Enterprise | 5,000 | 250,000 GB-s | 5,000 WRU | $3.60 | $43.20 |
+| Scale | Entities | Lambda GB-s | Step Transitions | Monthly Cost | Annual Cost |
+|-------|----------|-------------|------------------|--------------|-------------|
+| Startup | 50 | 23,040 | 310 | $1.95 | $23.40 |
+| SMB | 100 | 46,080 | 610 | $2.58 | $30.96 |
+| Medium | 500 | 230,400 | 3,010 | $5.88 | $70.56 |
+| Large | 1,000 | 460,800 | 6,010 | $9.70 | $116.40 |
+| Enterprise | 5,000 | 2,304,000 | 30,010 | $41.22 | $494.64 |
+| Max Scale | 10,000 | 4,608,000 | 60,010 | $80.38 | $964.56 |
 
-### AWS Free Tier Coverage
+### Worst-Case Cost Breakdown (1,000 Entities)
 
-| Service | Free Tier (Monthly) | Solution Usage | Status |
-|---------|---------------------|----------------|--------|
-| Lambda Requests | 1,000,000 | ~103 | ✅ Covered |
-| Lambda Compute | 400,000 GB-s | ~1,650 GB-s | ✅ Covered |
-| DynamoDB Storage | 25 GB | <0.1 GB | ✅ Covered |
-| DynamoDB WRU | 25 WCU | ~33 WRU | ✅ Covered |
-| S3 Storage | 5 GB | <0.01 GB | ✅ Covered |
-| Step Functions | 4,000 transitions | ~167 | ✅ Covered |
-| CloudWatch Alarms | 10 alarms | 2 | ✅ Covered |
-| SNS | 1,000,000 requests | ~0.33 | ✅ Covered |
+```
+Lambda Duration:    $7.68  (79.2%)
+KMS:                $1.03  (10.6%)
+CloudWatch:         $0.80  ( 8.2%)
+Step Functions:     $0.15  ( 1.5%)
+SNS:                $0.02  ( 0.2%)
+DynamoDB:           $0.01  ( 0.1%)
+S3:                 $0.01  ( 0.1%)
+─────────────────────────────────
+TOTAL:              $9.70  (100%)
+```
 
-**With Free Tier: ~$1.00/month (KMS key only)**
+### Comparison: Best vs Worst Case (1,000 Entities)
+
+| Scenario | Monthly Cost | Annual Cost | Assumptions |
+|----------|--------------|-------------|-------------|
+| Best Case | $1.79 | $21.48 | No retries, minimal logs, Free Tier |
+| Typical | $3.50 | $42.00 | Some retries, normal logs |
+| Worst Case | $9.70 | $116.40 | Max retries, verbose logs, no Free Tier |
+| **Absolute Max** | $15.00 | $180.00 | Everything fails + retries |
+
+### AWS Free Tier Impact
+
+| Service | Free Tier | Worst-Case Usage | Savings |
+|---------|-----------|------------------|---------|
+| Lambda Requests | 1,000,000 | 3,006 | $0.00 |
+| Lambda Compute | 400,000 GB-s | 460,800 GB-s | -$1.01 (exceeds) |
+| DynamoDB | 25 WCU | 4,000 WRU | $0.00 |
+| S3 | 5 GB | 0.12 GB | $0.00 |
+| Step Functions | 4,000 transitions | 6,010 | -$0.05 (exceeds) |
+| CloudWatch | 10 alarms | 2 | $0.00 |
+
+**With Free Tier (worst-case): ~$8.64/month**  
+**Without Free Tier (worst-case): ~$9.70/month**
 
 ### Cost Optimization Applied
 
-| Optimization | Implementation | Savings |
-|--------------|----------------|---------|
-| On-Demand DynamoDB | PAY_PER_REQUEST billing | ~90% vs Provisioned |
-| Reserved Concurrency | Max 10 concurrent ProcessEntity | Prevents spike |
-| S3 Intelligent-Tiering | Lifecycle rule after 30 days | ~40% storage |
-| DynamoDB TTL | Auto-delete after 365 days | Reduces storage |
-| 90-day Schedule | EventBridge rate(90 days) | ~75% vs weekly |
-| Lambda Memory Tuning | 256MB-512MB per function | Optimal cost/performance |
+| Optimization | Implementation | Worst-Case Savings |
+|--------------|----------------|-------------------|
+| On-Demand DynamoDB | PAY_PER_REQUEST | ~$50/month vs Provisioned |
+| Reserved Concurrency | Max 10 concurrent | Prevents runaway costs |
+| S3 Intelligent-Tiering | Lifecycle after 30 days | ~40% on old reports |
+| DynamoDB TTL | Auto-delete 365 days | ~$3/year storage |
+| Lambda Memory | 512MB (not 10GB) | ~95% savings |
+| 90-day Schedule | Not daily | ~97% savings |
 
-### ROI Analysis
+### ROI Analysis (Worst-Case)
 
-| Approach | Time/Execution | Cost/Year | Notes |
-|----------|----------------|-----------|-------|
-| Manual Audit | 33 hours | ~$6,600 | 4 audits × $50/hr × 33hrs |
-| This Solution | 5 minutes | ~$16 | Fully automated |
-| **Savings** | **99.8%** | **$6,584** | |
+| Approach | Time | Annual Cost | Notes |
+|----------|------|-------------|-------|
+| Manual Audit | 132 hrs/year | $6,600 | 4× audit × 33hrs × $50/hr |
+| This Solution (worst) | 20 min/year | $116.40 | Fully automated |
+| **Savings** | 131.7 hrs | **$6,483.60** | **98.2% cost reduction** |
 
-### Cost Monitoring
+### Cost Alerts Recommendation
 
-Monitor costs using AWS Cost Explorer with these tags:
-- `Project: AccessAdvisor`
-- `Environment: prod`
+Set up AWS Budgets alerts:
 
+| Alert | Threshold | Action |
+|-------|-----------|--------|
+| Monthly budget | $20 | Email notification |
+| Forecasted | $50 | Email + SNS |
+| Anomaly detection | 150% baseline | Immediate alert |
+
+> ⚠️ **Note:** Worst-case assumes all retries trigger, verbose logging enabled, and no Free Tier.  
 > 📊 Use [AWS Pricing Calculator](https://calculator.aws/#/createCalculator) for custom estimates.  
-> 📈 Prices may vary. Check [AWS Pricing](https://aws.amazon.com/pricing/) for latest rates.
+> 📈 Prices effective February 2026. Check [AWS Pricing](https://aws.amazon.com/pricing/) for updates.
 
 ## Project Structure
 
