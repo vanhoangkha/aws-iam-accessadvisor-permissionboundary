@@ -124,62 +124,110 @@ The following entities are excluded from permissions boundary enforcement:
 - DLQ for failed processing with CloudWatch alarms
 - Point-in-time recovery enabled for DynamoDB
 
-## Cost Estimation
+## Cost Estimation (2026 Pricing)
 
-### Monthly Cost Breakdown
+> **Region:** Asia Pacific (Singapore) - ap-southeast-1  
+> **Last Updated:** February 2026
 
-Assumptions: 100 IAM entities, runs every 90 days (~0.33 times/month)
+### Pricing Reference (Singapore Region)
 
-| Service | Monthly Estimate |
-|---------|------------------|
-| Lambda (3 functions) | ~$0.25 |
-| Step Functions | ~$0.01 |
-| DynamoDB (On-Demand) | ~$0.02 |
-| S3 | ~$0.02 |
-| KMS | ~$1.00 |
-| CloudWatch | ~$0.25 |
-| SNS | ~$0.00 |
-| EventBridge | Free |
-| **Total** | **~$1.50 - $2.00** |
+| Service | Unit | Price (USD) |
+|---------|------|-------------|
+| Lambda Requests | per 1M requests | $0.20 |
+| Lambda Duration (x86) | per GB-second | $0.0000166667 |
+| Step Functions | per 1,000 state transitions | $0.025 |
+| DynamoDB Write | per 1M write request units | $0.625 |
+| DynamoDB Read | per 1M read request units | $0.125 |
+| DynamoDB Storage | per GB-month | $0.285 |
+| S3 Standard | per GB-month | $0.025 |
+| S3 PUT requests | per 1,000 requests | $0.005 |
+| KMS CMK | per key per month | $1.00 |
+| KMS Requests | per 10,000 requests | $0.03 |
+| CloudWatch Logs | per GB ingested | $0.57 |
+| CloudWatch Alarms | per alarm per month | $0.10 |
+| SNS | per 1M requests | $0.50 |
+
+### Monthly Cost Calculation (100 IAM Entities)
+
+**Assumptions:**
+- 100 IAM entities (users + roles)
+- Runs every 90 days (~0.33 executions/month)
+- Average 300 seconds per ProcessEntity Lambda
+
+| Service | Calculation | Monthly Cost |
+|---------|-------------|--------------|
+| **Lambda** | | |
+| - Requests | 103 requests × $0.20/1M | $0.00 |
+| - ListEntities | 60s × 0.25GB × $0.0000166667 × 0.33 | $0.00 |
+| - ProcessEntity | 100 × 300s × 0.5GB × $0.0000166667 × 0.33 | $0.08 |
+| - GenerateReport | 60s × 0.25GB × $0.0000166667 × 0.33 | $0.00 |
+| **Step Functions** | 505 transitions × $0.025/1000 × 0.33 | $0.00 |
+| **DynamoDB** | | |
+| - Writes | 100 WRU × $0.625/1M × 0.33 | $0.00 |
+| - Storage | 0.01GB × $0.285 | $0.00 |
+| **S3** | | |
+| - Storage | 0.001GB × $0.025 | $0.00 |
+| - PUT requests | 2 requests × $0.005/1000 | $0.00 |
+| **KMS** | 1 key × $1.00 | $1.00 |
+| **CloudWatch** | | |
+| - Logs | 0.05GB × $0.57 | $0.03 |
+| - Alarms (2) | 2 × $0.10 | $0.20 |
+| **SNS** | 1 notification × $0.50/1M | $0.00 |
+| **EventBridge** | Scheduled rules | Free |
+| **Total** | | **$1.31** |
 
 ### Cost by Scale
 
-| Scale | IAM Entities | Monthly Cost | Annual Cost |
-|-------|--------------|--------------|-------------|
-| Small | 50 | ~$1.30 | ~$16 |
-| Medium | 100 | ~$1.60 | ~$20 |
-| Large | 500 | ~$3.50 | ~$42 |
-| Enterprise | 1,000+ | ~$6.00 | ~$72 |
+| Scale | Entities | Lambda Duration | DynamoDB Writes | Monthly Cost | Annual Cost |
+|-------|----------|-----------------|-----------------|--------------|-------------|
+| Startup | 50 | 2,500 GB-s | 50 WRU | $1.27 | $15.24 |
+| SMB | 100 | 5,000 GB-s | 100 WRU | $1.31 | $15.72 |
+| Medium | 500 | 25,000 GB-s | 500 WRU | $1.52 | $18.24 |
+| Large | 1,000 | 50,000 GB-s | 1,000 WRU | $1.79 | $21.48 |
+| Enterprise | 5,000 | 250,000 GB-s | 5,000 WRU | $3.60 | $43.20 |
 
-### Cost Optimization (Already Applied)
+### AWS Free Tier Coverage
 
-- **DynamoDB On-Demand**: Pay only when used, no provisioned capacity
-- **Lambda Reserved Concurrency**: Prevents cost spikes
-- **S3 Intelligent-Tiering**: Auto-transitions after 30 days
-- **DynamoDB TTL**: Auto-deletes old data after 365 days
-- **90-day schedule**: Optimal frequency for cost/security balance
+| Service | Free Tier (Monthly) | Solution Usage | Status |
+|---------|---------------------|----------------|--------|
+| Lambda Requests | 1,000,000 | ~103 | ✅ Covered |
+| Lambda Compute | 400,000 GB-s | ~1,650 GB-s | ✅ Covered |
+| DynamoDB Storage | 25 GB | <0.1 GB | ✅ Covered |
+| DynamoDB WRU | 25 WCU | ~33 WRU | ✅ Covered |
+| S3 Storage | 5 GB | <0.01 GB | ✅ Covered |
+| Step Functions | 4,000 transitions | ~167 | ✅ Covered |
+| CloudWatch Alarms | 10 alarms | 2 | ✅ Covered |
+| SNS | 1,000,000 requests | ~0.33 | ✅ Covered |
 
-### Free Tier Coverage
+**With Free Tier: ~$1.00/month (KMS key only)**
 
-With AWS Free Tier, actual cost may be **~$1.00/month** (KMS key only):
+### Cost Optimization Applied
 
-| Service | Free Tier | Solution Usage | Covered |
-|---------|-----------|----------------|---------|
-| Lambda | 1M requests + 400K GB-s | ~100 requests | ✅ |
-| DynamoDB | 25GB + 25 WCU/RCU | <1GB, ~100 writes | ✅ |
-| S3 | 5GB + 2K PUT | <1GB, ~10 PUT | ✅ |
-| Step Functions | 4,000 transitions | ~500 transitions | ✅ |
-| CloudWatch | 10 alarms | 2 alarms | ✅ |
+| Optimization | Implementation | Savings |
+|--------------|----------------|---------|
+| On-Demand DynamoDB | PAY_PER_REQUEST billing | ~90% vs Provisioned |
+| Reserved Concurrency | Max 10 concurrent ProcessEntity | Prevents spike |
+| S3 Intelligent-Tiering | Lifecycle rule after 30 days | ~40% storage |
+| DynamoDB TTL | Auto-delete after 365 days | Reduces storage |
+| 90-day Schedule | EventBridge rate(90 days) | ~75% vs weekly |
+| Lambda Memory Tuning | 256MB-512MB per function | Optimal cost/performance |
 
 ### ROI Analysis
 
-| Approach | Annual Cost |
-|----------|-------------|
-| Manual audit (4x/year) | ~$6,600 |
-| This solution | ~$20 |
-| **Savings** | **~99%** |
+| Approach | Time/Execution | Cost/Year | Notes |
+|----------|----------------|-----------|-------|
+| Manual Audit | 33 hours | ~$6,600 | 4 audits × $50/hr × 33hrs |
+| This Solution | 5 minutes | ~$16 | Fully automated |
+| **Savings** | **99.8%** | **$6,584** | |
 
-> 💡 Use [AWS Pricing Calculator](https://calculator.aws) for precise estimates based on your workload.
+### Cost Monitoring
+
+Monitor costs using AWS Cost Explorer with these tags:
+- `Project: AccessAdvisor`
+- `Environment: prod`
+
+> 📊 Use [AWS Pricing Calculator](https://calculator.aws/#/createCalculator) for custom estimates.  
+> 📈 Prices may vary. Check [AWS Pricing](https://aws.amazon.com/pricing/) for latest rates.
 
 ## Project Structure
 
