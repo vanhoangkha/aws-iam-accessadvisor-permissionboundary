@@ -293,9 +293,9 @@ Set up AWS Budgets alerts:
 | Forecasted | $50 | Email + SNS |
 | Anomaly detection | 150% baseline | Immediate alert |
 
-> ⚠️ **Note:** Worst-case assumes all retries trigger, verbose logging enabled, and no Free Tier.  
-> 📊 Use [AWS Pricing Calculator](https://calculator.aws/#/createCalculator) for custom estimates.  
-> 📈 Prices effective February 2026. Check [AWS Pricing](https://aws.amazon.com/pricing/) for updates.
+> **Note:** Worst-case assumes all retries trigger, verbose logging enabled, and no Free Tier.
+> Use [AWS Pricing Calculator](https://calculator.aws/#/createCalculator) for custom estimates.
+> Prices effective February 2026. Check [AWS Pricing](https://aws.amazon.com/pricing/) for updates.
 
 ## Project Structure
 
